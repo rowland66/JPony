@@ -12,5 +12,11 @@ public enum CapabilityType {
     Ref_,
     Val_,
     Box_,
-    Tag_
+    Tag_,
+    Iso__,
+    Trn__,
+    Ref__,
+    Val__,
+    Box__,
+    Tag__
 }

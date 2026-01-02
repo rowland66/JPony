@@ -19,6 +19,13 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class TypeChecker {
+    private static final List<TypeKind> primitiveTypes = List.of( TypeKind.BOOLEAN
+                                                                , TypeKind.INT
+                                                                , TypeKind.LONG
+                                                                , TypeKind.FLOAT
+                                                                , TypeKind.DOUBLE
+                                                                );
+
     private final ProcessingEnvironment processingEnvironment;
     private final List<Name> factoryNames;
     private final Trees trees;
@@ -56,7 +63,13 @@ public class TypeChecker {
                 clazzCompilationUnitTree.getImports());
 
         for (Element enclosedElement : clazz.getEnclosedElements()) {
-            if (enclosedElement.getKind() == ElementKind.METHOD) {
+            if (enclosedElement.getKind() == ElementKind.FIELD) {
+
+            }
+        }
+
+        for (Element enclosedElement : clazz.getEnclosedElements()) {
+            if (enclosedElement.getKind() == ElementKind.METHOD || enclosedElement.getKind() == ElementKind.CONSTRUCTOR) {
                 TypeEnvironment typeEnvironment = new TypeEnvironment();
                 populateObjectEnvironment(clazz, typeEnvironment);
                 typeCheckMethod(typeEnvironment, (ExecutableElement) enclosedElement);
@@ -86,9 +99,13 @@ public class TypeChecker {
 
     private void typeCheckMethod(TypeEnvironment typeEnvironment, ExecutableElement method) {
 
+        PonyType.Capability defaultMethodCapability = PonyType.Capability.Box;
+        if (method.getKind() == ElementKind.CONSTRUCTOR) {
+            defaultMethodCapability = PonyType.Capability.Ref;
+        }
         typeEnvironment.declareMethodVariable(
                 thisName,
-                mapReceiverCapAnnotationToPonyCapability(method),
+                mapReceiverCapAnnotationToPonyCapability(method, defaultMethodCapability),
                 method.getEnclosingElement().asType());
 
         PonyType methodRtrnType = mapCapabilityAnnotationToPonyCapability(method.getReturnType());
@@ -167,7 +184,7 @@ public class TypeChecker {
             Name variable = ((VariableTree) statementTree).getName();
             TypeEnvironment.EnvironmentValue lhsType = getVariableTreeDeclaredType((VariableTree) statementTree);
             PonyType rhsType = getExpressionType(typeEnvironment, ((VariableTree) statementTree).getInitializer()).ponyType;
-            rhsType = rhsType.alias();
+            rhsType = rhsType.asAlias();
             if (lhsType.getPonyType() == null) {
                 lhsType = new TypeEnvironment.EnvironmentValue(
                         new PonyType(rhsType.capability),
@@ -180,6 +197,13 @@ public class TypeChecker {
                     lhsType.javaType);
         } else if (statementTree.getKind() == Tree.Kind.EXPRESSION_STATEMENT) {
             ExpressionTree expressionTree = ((ExpressionStatementTree) statementTree).getExpression();
+            // Ignore calls to super for now
+            if (expressionTree.getKind() == Tree.Kind.METHOD_INVOCATION
+                    && ((MethodInvocationTree) expressionTree).getMethodSelect().getKind() == Tree.Kind.IDENTIFIER) {
+                if (((IdentifierTree) ((MethodInvocationTree) expressionTree).getMethodSelect()).getName().contentEquals("super")) {
+                    return;
+                }
+            }
             getExpressionType(typeEnvironment, expressionTree);
         } else if (statementTree.getKind() == Tree.Kind.RETURN) {
             ReturnTree returnTree = (ReturnTree) statementTree;
@@ -259,7 +283,6 @@ public class TypeChecker {
     }
 
     private PonyType getDefaultPonyType(TypeMirror javaType) {
-        List<TypeKind> primitiveTypes = List.of(TypeKind.BOOLEAN, TypeKind.INT, TypeKind.LONG, TypeKind.FLOAT, TypeKind.DOUBLE);
         if (javaType.getKind() == TypeKind.DECLARED) {
             if (processingEnvironment.getTypeUtils().isSameType(
                     javaType,
@@ -272,18 +295,17 @@ public class TypeChecker {
             }
         } else if (primitiveTypes.contains(javaType.getKind())) {
             return new PonyType(PonyType.Capability.Val);
-        }
-        return new PonyType(PonyType.Capability.Ref);
+        }        return new PonyType(PonyType.Capability.Ref);
     }
 
-    private PonyType mapReceiverCapAnnotationToPonyCapability(ExecutableElement method) {
+    private PonyType mapReceiverCapAnnotationToPonyCapability(ExecutableElement method, PonyType.Capability defaultCapability) {
         return ((ExecutableType) method.asType()).getReceiverType().getAnnotationMirrors().stream()
                 .filter(at ->
                         processingEnvironment.getTypeUtils().isSameType(at.getAnnotationType(), capabilityAnnotationType))
                 .map(this::getCapablityAnnotationsValue)
                 .map(PonyType::getPonyTypeForCapability)
                 .findAny()
-                .orElse(new PonyType(PonyType.Capability.Box));
+                .orElse(new PonyType(defaultCapability));
     }
 
     private CapabilityType getCapablityAnnotationsValue(AnnotationMirror annotationMirror) {
@@ -316,8 +338,17 @@ public class TypeChecker {
                                 @Override
                                 public PonyType visitIdentifier(IdentifierTree node, Object o) {
                                     if (capabilityAnnotationName.equals(node.getName())) {
-                                        Name n = ((IdentifierTree) at.getArguments().getFirst()).getName();
-                                        return new PonyType(PonyType.Capability.valueOf(n.toString()));
+                                        if (at.getArguments().getFirst().getKind() == Tree.Kind.IDENTIFIER) {
+                                            Name n = ((IdentifierTree) at.getArguments().getFirst()).getName();
+                                            return new PonyType(PonyType.Capability.valueOf(n.toString()));
+                                        } else if (at.getArguments().getFirst().getKind() == Tree.Kind.MEMBER_SELECT) {
+                                            MemberSelectTree mst = ((MemberSelectTree) at.getArguments().getFirst());
+                                            if (mst.getExpression().getKind() == Tree.Kind.IDENTIFIER
+                                                && ((IdentifierTree) mst.getExpression()).getName().contentEquals(CapabilityType.class.getSimpleName())) {
+                                                Name n = mst.getIdentifier();
+                                                return new PonyType(PonyType.Capability.valueOf(n.toString()));
+                                            }
+                                        }
                                     }
                                     return cap;
                                 }
@@ -331,7 +362,7 @@ public class TypeChecker {
             ExpressionTree expressionTree) {
         return switch (expressionTree) {
             case LiteralTree lt -> new TypeEnvironment.EnvironmentValue(
-                    new PonyType(PonyType.Capability.Val, true),
+                    new PonyType(PonyType.Capability.Val).asEphemeral(),
                     getLiteralType(lt.getValue()));
             case MethodInvocationTree mit -> getMethodInvocationType(env, mit);
             case IdentifierTree it -> getIdentifierType(env, it);
@@ -342,14 +373,37 @@ public class TypeChecker {
             default -> {
                 printError("unrecognized expression type", expressionTree);
                 throw new TypeCheckException();
-            }        };
+            }
+        };
     }
 
-    private TypeEnvironment.EnvironmentValue getAssignmentType(TypeEnvironment typeEnvironment, ExpressionTree variable, ExpressionTree expression) {
-        TypeEnvironment.EnvironmentValue lhsType = getExpressionType(typeEnvironment, variable);
-        TypeEnvironment.EnvironmentValue rhsType = getExpressionType(typeEnvironment, expression);
-        evaluateAssignment(lhsType.ponyType, rhsType.ponyType, expression);
-        return lhsType;
+    private Optional<TypeEnvironment.EnvironmentValue> getExpressionWriteType(
+            TypeEnvironment env,
+            ExpressionTree expressionTree) {
+        return switch (expressionTree) {
+            case IdentifierTree it -> getIdentifierWriteType(env, it);
+            case MemberSelectTree mst -> getMemberWriteType(env, mst);
+            default -> {
+                printError("unrecognized expression type", expressionTree);
+                throw new TypeCheckException();
+            }
+        };
+    }
+
+    private TypeEnvironment.EnvironmentValue getAssignmentType(
+            TypeEnvironment typeEnvironment,
+            ExpressionTree variable,
+            ExpressionTree expression) {
+
+        return getExpressionWriteType(typeEnvironment, variable)
+                .map(lhsType -> {
+                    TypeEnvironment.EnvironmentValue rhsType = getExpressionType(typeEnvironment, expression);
+                    evaluateAssignment(lhsType.ponyType, rhsType.ponyType, expression);
+                    return lhsType;
+                }).orElseThrow(() -> {
+                    printError("left hand side variable is not writable", variable);
+                    return new TypeCheckException();
+                });
     }
 
     private void evaluateAssignment(PonyType lhsType, PonyType rhsType, Tree rhsTree) {
@@ -366,17 +420,16 @@ public class TypeChecker {
         Name variableName = it.getName();
         PonyType variableType = typeEnvironment.getVariableType(variableName);
         if (variableType != null) {
+            PonyType receiverType = typeEnvironment.getVariableType(thisName);
             if (typeEnvironment.isInRecovery()) {
-                if (variableType.capability != PonyType.Capability.Iso &&
-                        variableType.capability != PonyType.Capability.Val &&
-                        variableType.capability != PonyType.Capability.Tag) {
+                 if (!variableType.isSendable()){
                     if (!typeEnvironment.isVariableDefinedInCurrentScope(variableName)) {
                         printError("illegal access of non sendable variable from recover block", it);
                     }
                 }
             }
             return new TypeEnvironment.EnvironmentValue(
-                    variableType,
+                    variableType.viewpointAdapt(receiverType),
                     typeEnvironment.getVariableJavaType(it.getName()));
         }
         String classname = nameResolver.resolve(it.getName());
@@ -394,10 +447,23 @@ public class TypeChecker {
         throw new TypeCheckException();
     }
 
-    private TypeEnvironment.EnvironmentValue getMemberType(TypeEnvironment env, MemberSelectTree memberSelectTree) {
-        TypeEnvironment.EnvironmentValue expression = getExpressionType(env, memberSelectTree.getExpression());
+    private Optional<TypeEnvironment.EnvironmentValue> getIdentifierWriteType(TypeEnvironment typeEnvironment, IdentifierTree it) {
+        Name variableName = it.getName();
+        PonyType variableType = typeEnvironment.getVariableType(variableName);
+        if (variableType != null) {
+            PonyType receiverType = typeEnvironment.getVariableType(thisName);
+            TypeMirror receiverJavaType = typeEnvironment.getVariableJavaType(variableName);
+            return receiverType.getWriteType(variableType)
+                    .map(pt -> new TypeEnvironment.EnvironmentValue(pt, receiverJavaType));
+        }
+        printError("unable to resolve identifier", it);
+        throw new TypeCheckException();
+    }
 
-        TypeElement receiverClassElement = (TypeElement) processingEnvironment.getTypeUtils().asElement(expression.getJavaType());
+    private TypeEnvironment.EnvironmentValue getMemberType(TypeEnvironment env, MemberSelectTree memberSelectTree) {
+        TypeEnvironment.EnvironmentValue receiver = getExpressionType(env, memberSelectTree.getExpression());
+
+        TypeElement receiverClassElement = (TypeElement) processingEnvironment.getTypeUtils().asElement(receiver.getJavaType());
         Optional<VariableElement> maybeMember =  processingEnvironment.getElementUtils().getAllMembers(receiverClassElement).stream()
                 .filter(e -> e.getKind() == ElementKind.FIELD)
                 .filter(e -> !e.getModifiers().contains(Modifier.STATIC))
@@ -411,7 +477,7 @@ public class TypeChecker {
         }
 
         PonyType ponyType =
-                mapCapabilityAnnotationToPonyCapability(maybeMember.get().asType()).viewpointAdapt(expression.getPonyType());
+                mapCapabilityAnnotationToPonyCapability(maybeMember.get().asType()).viewpointAdapt(receiver.getPonyType());
 
         Optional<TypeEnvironment.EnvironmentValue> maybeResult = maybeMember
                 .map(ve -> new TypeEnvironment.EnvironmentValue(ponyType, ve.asType()));
@@ -419,12 +485,35 @@ public class TypeChecker {
         return maybeResult.get();
     }
 
+    private Optional<TypeEnvironment.EnvironmentValue> getMemberWriteType(TypeEnvironment env, MemberSelectTree memberSelectTree) {
+        return getExpressionWriteType(env, memberSelectTree.getExpression())
+                .flatMap(receiver -> {
+                    TypeElement receiverClassElement = (TypeElement) processingEnvironment.getTypeUtils().asElement(receiver.getJavaType());
+                    Optional<VariableElement> maybeMember = processingEnvironment.getElementUtils().getAllMembers(receiverClassElement).stream()
+                            .filter(e -> e.getKind() == ElementKind.FIELD)
+                            .filter(e -> !e.getModifiers().contains(Modifier.STATIC))
+                            .filter(e -> e.getSimpleName().equals(memberSelectTree.getIdentifier()))
+                            .map(e -> (VariableElement) e)
+                            .findFirst();
+
+                    if (maybeMember.isEmpty()) {
+                        printError("failed to identify field", memberSelectTree);
+                        throw new TypeCheckException();
+                    }
+
+                    return maybeMember.flatMap(member ->
+                            receiver.getPonyType().getWriteType(mapCapabilityAnnotationToPonyCapability(member.asType()))
+                                            .map(pt -> new TypeEnvironment.EnvironmentValue(pt, member.asType())));
+
+                });
+    }
+
     private TypeEnvironment.EnvironmentValue getMethodInvocationType(TypeEnvironment env, MethodInvocationTree methodInvocationTree) {
         Optional<TypeEnvironment.EnvironmentValue> maybeResult = switch (methodInvocationTree.getMethodSelect()) {
             case IdentifierTree it -> getMethodReturnType(
                     env,
                     methodInvocationTree,
-                    env.getVariableType(thisName).alias(),
+                    env.getVariableType(thisName).asAlias(),
                     (DeclaredType) env.getVariableJavaType(thisName),
                     it.getName(),
                     methodInvocationTree.getArguments());
@@ -433,7 +522,7 @@ public class TypeChecker {
                         env,
                         methodInvocationTree,
                         Optional.ofNullable(getExpressionType(env, mst.getExpression()).ponyType)
-                                .map(PonyType::alias)
+                                .map(PonyType::asAlias)
                                 .orElse(null),
                         (DeclaredType) getExpressionType(env, mst.getExpression()).javaType,
                         mst.getIdentifier(),
@@ -481,9 +570,11 @@ public class TypeChecker {
                 .flatMap(ee -> Optional.ofNullable(ee.getAnnotation(Capability.class)))
                 .map(Capability::value)
                 .map(PonyType::getPonyTypeForCapability)
-                .map(pt -> new PonyType(pt.capability, true))
+                .map(pt -> new PonyType(pt.capability).asEphemeral())
                 .map(pt -> new TypeEnvironment.EnvironmentValue(pt, targetType.asType()))
-                .orElseGet(() -> new TypeEnvironment.EnvironmentValue(new PonyType(PonyType.Capability.Ref), targetType.asType()));
+                .orElseGet(() -> new TypeEnvironment.EnvironmentValue(
+                        new PonyType(PonyType.Capability.Ref).asEphemeral(),
+                        targetType.asType()));
     }
 
     private Optional<ExecutableElement> getMethodExecutableElement(
@@ -511,17 +602,17 @@ public class TypeChecker {
         PonyType targetType = (
                 processingEnvironment.getTypeUtils().isSubtype(receiverJavaType, actorType) ?
                         new PonyType(PonyType.Capability.Tag) :
-                        mapReceiverCapAnnotationToPonyCapability(method));
+                        mapReceiverCapAnnotationToPonyCapability(method, PonyType.Capability.Box));
 
         if (!receiverType.isSubtypeOf(targetType)) {
-            printError("caller is not a subtype of method receiver type", methodInvocationTree);
+            printError("receiver is not a subtype of target type", methodInvocationTree);
             throw new TypeCheckException();
         }
 
         List<PonyType> argTypes = args.stream()
                 .map(et -> getExpressionType(typeEnvironment, et))
                 .map(TypeEnvironment.EnvironmentValue::getPonyType)
-                .map(PonyType::alias)
+                .map(PonyType::asAlias)
                 .toList();
 
         Optional<List<PonyType>> maybeParamTypes = maybeMethod
@@ -573,7 +664,7 @@ public class TypeChecker {
         List<PonyType> argTypes = args.stream()
                 .map(et -> getExpressionType(typeEnvironment, et))
                 .map(TypeEnvironment.EnvironmentValue::getPonyType)
-                .map(PonyType::alias)
+                .map(PonyType::asAlias)
                 .toList();
 
         Optional<List<PonyType>> maybeParamTypes = maybeMethod
@@ -621,7 +712,7 @@ public class TypeChecker {
                                 env.consumeVariable(((IdentifierTree) args.getFirst()).getName());
                         if (consumeType != null) {
                             return Optional.of(new TypeEnvironment.EnvironmentValue(
-                                    new PonyType(consumeType.ponyType.capability, true),
+                                    new PonyType(consumeType.ponyType.capability).asEphemeral(),
                                     consumeType.javaType));
                         } else {
                             printError("unknown variable", args.getFirst());
@@ -634,7 +725,7 @@ public class TypeChecker {
                                     env.consumeField(((MemberSelectTree) args.getFirst()).getIdentifier());
                             if (consumeType != null) {
                                 return Optional.of(new TypeEnvironment.EnvironmentValue(
-                                        new PonyType(consumeType.ponyType.capability, true),
+                                        new PonyType(consumeType.ponyType.capability).asEphemeral(),
                                         consumeType.javaType));
                             } else {
                                 printError("unknown field", args.getFirst());
@@ -652,13 +743,13 @@ public class TypeChecker {
                 if (args.size() == 1) {
                     if (args.getFirst().getKind() == Tree.Kind.LAMBDA_EXPRESSION) {
                         TypeEnvironment.EnvironmentValue recoverType = typeCheckLambda(env, ((LambdaExpressionTree) args.getFirst()));
-                        if (recoverType.ponyType.capability == PonyType.Capability.Ref) {
+                        if (recoverType.ponyType.isMutatable()) {
                             return Optional.of(new TypeEnvironment.EnvironmentValue(
-                                    new PonyType(PonyType.Capability.Iso, true),
+                                    new PonyType(PonyType.Capability.Iso).asEphemeral(),
                                     recoverType.javaType));
                         } else {
                             return Optional.of(new TypeEnvironment.EnvironmentValue(
-                                    new PonyType(PonyType.Capability.Val, true),
+                                    new PonyType(PonyType.Capability.Val).asEphemeral(),
                                     recoverType.javaType));
                         }
                     }

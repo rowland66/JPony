@@ -7,16 +7,15 @@ import org.rowland.jpony.annotationprocessor.JPonyProcessor;
 
 import java.util.Locale;
 
-
-public class BasicTests {
+public class RecoverTests {
 
     @Test
-    public void testFirstSimple() {
+    public void testNoWriteToVal() {
         Compilation compilation = Compiler.javac()
                 .withProcessors(new JPonyProcessor())
-                .compile(JavaFileObjects.forResource("FirstSimple.java"));
+                .compile(JavaFileObjects.forResource("recover/CantReturnTrn_TrnAutoRecovery.java"));
 
         Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 1, compilation.errors().size());
-        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (14,16) incorrect or inconsistent return type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (24,57) receiver is not a subtype of target type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
     }
 }

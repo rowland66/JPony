@@ -2,6 +2,8 @@ package org.rowland.jpony.checker;
 
 import org.rowland.jpony.annotations.CapabilityType;
 
+import java.util.Optional;
+
 sealed class PonyType permits PonyType.ConsumedVariable {
     enum Capability {
         Iso,
@@ -21,56 +23,98 @@ sealed class PonyType permits PonyType.ConsumedVariable {
     final Modifier modifier;
 
     PonyType(Capability capability) {
-        this(capability, false);
+        this(capability, null);
     }
 
-    PonyType(Capability capability, boolean isEphemeral) {
+    private PonyType(Capability capability, Modifier modifier) {
         this.capability = capability;
-        this.modifier = Modifier.Ephemeral;
+        this.modifier = modifier;
     }
 
-    public PonyType alias() {
-        if (this.modifier == Modifier.Ephemeral) {
+    PonyType asEphemeral() {
+        return new PonyType(this.capability, Modifier.Ephemeral);
+    }
+
+    PonyType asAlias() {
+        if (modifier == Modifier.Ephemeral) {
             return this;
         }
-        if (this.capability == Capability.Iso) {
-            return new PonyType(Capability.Tag);
-        }
-        if (this.capability == Capability.Trn) {
-            return new PonyType(Capability.Box);
-        }
-        return this;
+        return new PonyType(this.capability, Modifier.Alias);
     }
 
-    public boolean isSubtypeOf(PonyType t) {
-        if (t.capability == Capability.Tag) {
-                return true;
-        }
-        if (capability == Capability.Tag) {
-            return false;
+    boolean isEphemeral() {
+        return modifier == Modifier.Ephemeral;
+    }
+
+    boolean isAlias() {
+        return modifier == Modifier.Alias;
+    }
+
+    private static PonyType applyAliasing(PonyType pt) {
+        if (pt.modifier == null) {
+            return pt;
         }
 
-        if (t.capability == Capability.Box && capability != Capability.Iso) {
-            return true;
-        }
+        return switch (pt.modifier) {
+            case Ephemeral -> switch (pt.capability) {
+                case Iso, Trn -> pt;
+                default -> new PonyType(pt.capability, null);
+            };
+            case Alias -> switch (pt.capability) {
+                case Iso -> new PonyType(Capability.Tag, null);
+                case Trn -> new PonyType(Capability.Box, null);
+                default -> new PonyType(pt.capability, null);
+            };
+        };
+    }
 
-        if (capability == Capability.Box) {
-            return false;
-        }
+    public boolean isSubtypeOf(PonyType superType) {
+        PonyType subType = applyAliasing(this);
+        superType = applyAliasing(superType);
 
-        if (capability == Capability.Val || capability == Capability.Ref) {
-            return t.capability.equals(capability);
-        }
+        if (superType.isEphemeral() && !subType.isEphemeral()) return false;
 
-        if (capability == Capability.Trn && (modifier == Modifier.Ephemeral)) {
-            if (t.capability == Capability.Trn || t.capability == Capability.Ref || t.capability == Capability.Val) {
-                return true;
+        if (superType.capability == Capability.Tag) return true;
+
+        if (subType.isEphemeral()) {
+            switch (subType.capability) {
+                case Iso: return true;
+                case Trn: switch (superType.capability) {
+                    case Iso: return false;
+                    default: return true;
+                }
             }
-            return false;
         }
 
-        if (capability == Capability.Iso && (modifier == Modifier.Ephemeral)) {
-            return true;
+        switch (subType.capability) {
+            case Iso: return (superType.capability == Capability.Iso);
+            case Trn:
+                switch (superType.capability) {
+                    case Trn:
+                    case Box:
+                        return true;
+                }
+                break;
+            case Ref:
+                switch (superType.capability) {
+                    case Ref:
+                    case Box:
+                        return true;
+                }
+                break;
+            case Val:
+                switch (superType.capability) {
+                    case Val:
+                    case Box:
+                        return true;
+                }
+                break;
+            case Box:
+                switch (superType.capability) {
+                    case Box:
+                        return true;
+                }
+                break;
         }
 
         return false;
@@ -126,6 +170,36 @@ sealed class PonyType permits PonyType.ConsumedVariable {
         return this; // Tag
     }
 
+    public Optional<PonyType> getWriteType(PonyType pt) {
+        if (capability == Capability.Tag || capability == Capability.Box || capability == Capability.Val) {
+            return Optional.empty();
+        }
+        if (capability == Capability.Ref) {
+            return Optional.of(pt);
+        }
+        if (pt.capability == Capability.Iso || pt.capability == Capability.Val || pt.capability == Capability.Tag) {
+            return Optional.of(pt);
+        }
+        if (capability == Capability.Trn && pt.capability == Capability.Trn) {
+            return Optional.of(pt);
+        }
+        return Optional.empty();
+    }
+
+    public boolean isSendable() {
+        if (capability == Capability.Iso || capability == Capability.Val || capability == Capability.Tag) {
+            return true;
+        }
+        return false;
+    }
+
+    public boolean isMutatable() {
+        if (capability == Capability.Iso || capability == Capability.Trn || capability == Capability.Ref) {
+            return true;
+        }
+        return false;
+    }
+
     public static PonyType getPonyTypeForCapability(CapabilityType capability) {
         return switch (capability) {
             case Iso -> new PonyType(PonyType.Capability.Iso);
@@ -134,12 +208,18 @@ sealed class PonyType permits PonyType.ConsumedVariable {
             case Val -> new PonyType(PonyType.Capability.Val);
             case Box -> new PonyType(PonyType.Capability.Box);
             case Tag -> new PonyType(PonyType.Capability.Tag);
-            case Iso_ -> new PonyType(PonyType.Capability.Iso,true);
-            case Trn_ -> new PonyType(PonyType.Capability.Trn,true);
-            case Ref_ -> new PonyType(PonyType.Capability.Ref,true);
-            case Val_ -> new PonyType(PonyType.Capability.Val,true);
-            case Box_ -> new PonyType(PonyType.Capability.Box,true);
-            case Tag_ -> new PonyType(PonyType.Capability.Tag,true);
+            case Iso_ -> new PonyType(PonyType.Capability.Iso).asEphemeral();
+            case Trn_ -> new PonyType(PonyType.Capability.Trn).asEphemeral();
+            case Ref_ -> new PonyType(PonyType.Capability.Ref).asEphemeral();
+            case Val_ -> new PonyType(PonyType.Capability.Val).asEphemeral();
+            case Box_ -> new PonyType(PonyType.Capability.Box).asEphemeral();
+            case Tag_ -> new PonyType(PonyType.Capability.Tag).asEphemeral();
+            case Iso__ -> new PonyType(PonyType.Capability.Iso).asAlias();
+            case Trn__ -> new PonyType(PonyType.Capability.Trn).asAlias();
+            case Ref__ -> new PonyType(PonyType.Capability.Ref).asAlias();
+            case Val__ -> new PonyType(PonyType.Capability.Val).asAlias();
+            case Box__ -> new PonyType(PonyType.Capability.Box).asAlias();
+            case Tag__ -> new PonyType(PonyType.Capability.Tag).asAlias();
         };
     }
 

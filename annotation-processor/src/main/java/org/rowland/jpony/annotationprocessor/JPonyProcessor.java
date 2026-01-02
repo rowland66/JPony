@@ -103,6 +103,9 @@ public class JPonyProcessor extends AbstractProcessor {
             return false; // Claim these annotations
         } catch (IOException e) {
             throw new RuntimeException(e);
+        } catch (RuntimeException e) {
+            processingEnv.getMessager().printError(e.getMessage());
+            throw e;
         }
     }
 

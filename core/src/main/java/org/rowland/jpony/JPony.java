@@ -1,5 +1,7 @@
 package org.rowland.jpony;
 
+import org.rowland.jpony.annotations.CapabilityType;
+
 import java.util.function.Supplier;
 
 public class JPony {
