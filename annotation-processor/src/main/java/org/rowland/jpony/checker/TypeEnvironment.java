@@ -7,7 +7,6 @@ import java.util.stream.Collectors;
 
 class TypeEnvironment {
 
-    private final Map<Name, EnvironmentValue> objectEnv;
     private MethodScope methodEnv;
 
     static class EnvironmentValue {
@@ -34,7 +33,6 @@ class TypeEnvironment {
     }
 
     TypeEnvironment() {
-        this.objectEnv = new HashMap<>();
         this.methodEnv = new MethodScope(null);
     }
 
@@ -47,18 +45,6 @@ class TypeEnvironment {
     TypeMirror getVariableJavaType(Name variable) {
         return Optional.ofNullable(getVariableEnvVal(variable, true))
                 .map(ev -> ev.javaType)
-                .orElse(null);
-    }
-
-    PonyType getFieldType(Name variable) {
-        return Optional.ofNullable(objectEnv.get(variable))
-                .map(e -> e.ponyType)
-                .orElse(null);
-    }
-
-    TypeMirror getFieldJavaType(Name variable) {
-        return Optional.ofNullable(objectEnv.get(variable))
-                .map(e -> e.javaType)
                 .orElse(null);
     }
 
@@ -75,19 +61,7 @@ class TypeEnvironment {
                 rtrn = new EnvironmentValue(rtrn.javaType);
             }
         }
-        if (rtrn == null && checkInstance) {
-            return Optional.ofNullable(objectEnv.get(variable))
-                    .map(ev ->
-                            new EnvironmentValue(
-                                    ev.ponyType,
-                                    ev.javaType))
-                    .orElse(null);
-        }
         return rtrn;
-    }
-
-    void declareObjectField(Name field, PonyType type, TypeMirror javaType) {
-        objectEnv.put(field, new EnvironmentValue(type, javaType));
     }
 
     void declareMethodVariable(Name variable, PonyType type, TypeMirror javaType) {
@@ -117,12 +91,8 @@ class TypeEnvironment {
         return rtrn;
     }
 
-    EnvironmentValue consumeField(Name field) {
-        EnvironmentValue rtrn = objectEnv.get(field);
-        if (rtrn != null) {
+    void consumeField(Name field) {
         methodEnv.consumedField = field;
-        }
-        return rtrn;
     }
 
     boolean isAnyConsumed() {
@@ -147,12 +117,6 @@ class TypeEnvironment {
         return methodEnv.consumedVariables.stream()
                 .filter(nm -> !methodEnv.scopeVariables.containsKey(nm))
                 .collect(Collectors.toSet());
-    }
-
-    PonyType getInstanceType(Name variable) {
-        return Optional.ofNullable(objectEnv.get(variable))
-                        .map(ev -> ev.ponyType)
-                        .orElse(null);
     }
 
     void setReturnType(EnvironmentValue rtrnType) {

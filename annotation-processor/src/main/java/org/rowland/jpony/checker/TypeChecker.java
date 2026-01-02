@@ -70,9 +70,7 @@ public class TypeChecker {
 
         for (Element enclosedElement : clazz.getEnclosedElements()) {
             if (enclosedElement.getKind() == ElementKind.METHOD || enclosedElement.getKind() == ElementKind.CONSTRUCTOR) {
-                TypeEnvironment typeEnvironment = new TypeEnvironment();
-                populateObjectEnvironment(clazz, typeEnvironment);
-                typeCheckMethod(typeEnvironment, (ExecutableElement) enclosedElement);
+                typeCheckMethod((ExecutableElement) enclosedElement);
             }
         }
 
@@ -86,18 +84,9 @@ public class TypeChecker {
         processingEnvironment.getMessager().printError("at ("+lineNumber+","+columnNumber+") "+msg);
     }
 
-    private void populateObjectEnvironment(Element clazz, TypeEnvironment typeEnvironment) {
-        for (Element enclosedElement : clazz.getEnclosedElements()) {
-            if (enclosedElement.getKind() == ElementKind.FIELD) {
-                VariableElement variableElement = ((VariableElement) enclosedElement);
-                Name variableName = variableElement.getSimpleName();
-                PonyType capability = mapCapabilityAnnotationToPonyCapability(enclosedElement.asType());
-                typeEnvironment.declareObjectField(variableName, capability, variableElement.asType());
-            }
-        }
-    }
+    private void typeCheckMethod(ExecutableElement method) {
 
-    private void typeCheckMethod(TypeEnvironment typeEnvironment, ExecutableElement method) {
+        TypeEnvironment typeEnvironment = new TypeEnvironment();
 
         PonyType.Capability defaultMethodCapability = PonyType.Capability.Box;
         if (method.getKind() == ElementKind.CONSTRUCTOR) {
@@ -367,7 +356,7 @@ public class TypeChecker {
             case MethodInvocationTree mit -> getMethodInvocationType(env, mit);
             case IdentifierTree it -> getIdentifierType(env, it);
             case ConditionalExpressionTree cet -> getConditionalType(env, cet);
-            case NewClassTree nct -> getConstructorCreateType(nct.getIdentifier(), nct.getArguments());
+            case NewClassTree nct -> getConstructorCreateType(env, nct.getIdentifier(), nct.getArguments());
             case AssignmentTree at -> getAssignmentType(env, at.getVariable(), at.getExpression());
             case MemberSelectTree mst -> getMemberType(env, mst);
             default -> {
@@ -420,18 +409,18 @@ public class TypeChecker {
         Name variableName = it.getName();
         PonyType variableType = typeEnvironment.getVariableType(variableName);
         if (variableType != null) {
-            PonyType receiverType = typeEnvironment.getVariableType(thisName);
-            if (typeEnvironment.isInRecovery()) {
-                 if (!variableType.isSendable()){
-                    if (!typeEnvironment.isVariableDefinedInCurrentScope(variableName)) {
-                        printError("illegal access of non sendable variable from recover block", it);
-                    }
-                }
+            if (typeEnvironment.isInRecovery()
+                    && !typeEnvironment.isVariableDefinedInCurrentScope(variableName)
+                    && !variableType.isSendable()) {
+                        return new TypeEnvironment.EnvironmentValue(
+                                new PonyType(PonyType.Capability.Tag),
+                                typeEnvironment.getVariableJavaType(it.getName()));
             }
             return new TypeEnvironment.EnvironmentValue(
-                    variableType.viewpointAdapt(receiverType),
+                    variableType,
                     typeEnvironment.getVariableJavaType(it.getName()));
         }
+
         String classname = nameResolver.resolve(it.getName());
         if (classname != null) {
             if (nameResolver.isFactory(classname)) {
@@ -443,8 +432,10 @@ public class TypeChecker {
                     null,
                     processingEnvironment.getElementUtils().getTypeElement(classname).asType());
         }
-        printError("unable to resolve identifier", it);
-        throw new TypeCheckException();
+
+        MemberSelectTree virtualMemberSelectTree = getVirtualMemberSelectTree(it.getName());
+
+        return getExpressionType(typeEnvironment, virtualMemberSelectTree);
     }
 
     private Optional<TypeEnvironment.EnvironmentValue> getIdentifierWriteType(TypeEnvironment typeEnvironment, IdentifierTree it) {
@@ -456,8 +447,7 @@ public class TypeChecker {
             return receiverType.getWriteType(variableType)
                     .map(pt -> new TypeEnvironment.EnvironmentValue(pt, receiverJavaType));
         }
-        printError("unable to resolve identifier", it);
-        throw new TypeCheckException();
+        return getExpressionWriteType(typeEnvironment, getVirtualMemberSelectTree(it.getName()));
     }
 
     private TypeEnvironment.EnvironmentValue getMemberType(TypeEnvironment env, MemberSelectTree memberSelectTree) {
@@ -536,7 +526,10 @@ public class TypeChecker {
         return maybeResult.get();
     }
 
-    private TypeEnvironment.EnvironmentValue getConstructorCreateType(ExpressionTree expression, List<? extends ExpressionTree> args) {
+    private TypeEnvironment.EnvironmentValue getConstructorCreateType(
+            TypeEnvironment typeEnvironment,
+            ExpressionTree expression,
+            List<? extends ExpressionTree> args) {
         String className;
         if (expression.getKind() == Tree.Kind.IDENTIFIER) {
             className = nameResolver.resolve(((IdentifierTree) expression).getName());
@@ -565,6 +558,8 @@ public class TypeChecker {
             printError("undefined constructor with necessary agruments", expression);
             throw new TypeCheckException();
         }
+
+        checkMethodCallArguments(typeEnvironment, maybeMethodElement.get(), args);
 
         return maybeMethodElement
                 .flatMap(ee -> Optional.ofNullable(ee.getAnnotation(Capability.class)))
@@ -609,35 +604,8 @@ public class TypeChecker {
             throw new TypeCheckException();
         }
 
-        List<PonyType> argTypes = args.stream()
-                .map(et -> getExpressionType(typeEnvironment, et))
-                .map(TypeEnvironment.EnvironmentValue::getPonyType)
-                .map(PonyType::asAlias)
-                .toList();
+        checkMethodCallArguments(typeEnvironment, method, args);
 
-        Optional<List<PonyType>> maybeParamTypes = maybeMethod
-                .map(ExecutableElement::getParameters)
-                .map(paramList -> paramList.stream()
-                        .map(VariableElement::asType)
-                        .map(this::mapCapabilityAnnotationToPonyCapability)
-                        .collect(Collectors.toList()));
-
-        Iterator<PonyType> argTypesIterator = argTypes.iterator();
-        Iterator<PonyType> paramTypesIterator = maybeParamTypes.get().iterator();
-        Iterator<? extends ExpressionTree> argsIterator = args.iterator();
-        boolean error = false;
-        while (argTypesIterator.hasNext()) {
-            if (!argTypesIterator.next().isSubtypeOf(paramTypesIterator.next())) {
-                printError("argument is not a subtype of parameter", argsIterator.next());
-                error = true;
-            } else {
-                argsIterator.next();
-            }
-        }
-
-        if (error) {
-            throw new TypeCheckException();
-        }
         return maybeMethod;
     }
 
@@ -659,23 +627,28 @@ public class TypeChecker {
             return maybeMethod;
         }
 
-        ExecutableElement method = maybeMethod.get();
+        checkMethodCallArguments(typeEnvironment, maybeMethod.get(), args);
 
+        return maybeMethod;
+    }
+
+    private void checkMethodCallArguments(
+            TypeEnvironment typeEnvironment,
+            ExecutableElement method,
+            List<? extends ExpressionTree> args) {
         List<PonyType> argTypes = args.stream()
                 .map(et -> getExpressionType(typeEnvironment, et))
                 .map(TypeEnvironment.EnvironmentValue::getPonyType)
                 .map(PonyType::asAlias)
                 .toList();
 
-        Optional<List<PonyType>> maybeParamTypes = maybeMethod
-                .map(ExecutableElement::getParameters)
-                .map(paramList -> paramList.stream()
-                        .map(VariableElement::asType)
-                        .map(this::mapCapabilityAnnotationToPonyCapability)
-                        .collect(Collectors.toList()));
+        List<PonyType> paramTypes = method.getParameters().stream()
+                .map(VariableElement::asType)
+                .map(this::mapCapabilityAnnotationToPonyCapability)
+                .toList();
 
         Iterator<PonyType> argTypesIterator = argTypes.iterator();
-        Iterator<PonyType> paramTypesIterator = maybeParamTypes.get().iterator();
+        Iterator<PonyType> paramTypesIterator = paramTypes.iterator();
         Iterator<? extends ExpressionTree> argsIterator = args.iterator();
         boolean error = false;
         while (argTypesIterator.hasNext()) {
@@ -690,7 +663,6 @@ public class TypeChecker {
         if (error) {
             throw new TypeCheckException();
         }
-        return maybeMethod;
     }
 
     private Optional<TypeEnvironment.EnvironmentValue> getMethodReturnType(
@@ -707,6 +679,7 @@ public class TypeChecker {
         } else*/ if (processingEnvironment.getTypeUtils().isSameType(receiverJavaType, jPonyType)) {
             if (methodName.contentEquals("consume")) {
                 if (args.size() == 1) {
+                    getExpressionType(env, args.getFirst());
                     if (args.getFirst().getKind() == Tree.Kind.IDENTIFIER) {
                         TypeEnvironment.EnvironmentValue consumeType =
                                 env.consumeVariable(((IdentifierTree) args.getFirst()).getName());
@@ -722,8 +695,9 @@ public class TypeChecker {
                         if (selectExpression.getKind() == Tree.Kind.IDENTIFIER &&
                                 ((IdentifierTree) selectExpression).getName().contentEquals("this")) {
                             TypeEnvironment.EnvironmentValue consumeType =
-                                    env.consumeField(((MemberSelectTree) args.getFirst()).getIdentifier());
+                                    getMemberType(env, (MemberSelectTree) args.getFirst());
                             if (consumeType != null) {
+                                env.consumeField(((MemberSelectTree) args.getFirst()).getIdentifier());
                                 return Optional.of(new TypeEnvironment.EnvironmentValue(
                                         new PonyType(consumeType.ponyType.capability).asEphemeral(),
                                         consumeType.javaType));
@@ -792,5 +766,44 @@ public class TypeChecker {
             return processingEnvironment.getTypeUtils().getNullType();
         }
         return processingEnvironment.getElementUtils().getTypeElement(o.getClass().getCanonicalName()).asType();
+    }
+
+    private MemberSelectTree getVirtualMemberSelectTree(final Name fieldName) {
+        return new MemberSelectTree() {
+            @Override
+            public ExpressionTree getExpression() {
+                return new IdentifierTree() {
+                    @Override
+                    public Name getName() {
+                        return thisName;
+                    }
+
+                    @Override
+                    public Kind getKind() {
+                        return Kind.IDENTIFIER;
+                    }
+
+                    @Override
+                    public <R, D> R accept(TreeVisitor<R, D> visitor, D data) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+
+            @Override
+            public Name getIdentifier() {
+                return fieldName;
+            }
+
+            @Override
+            public Kind getKind() {
+                return Kind.MEMBER_SELECT;
+            }
+
+            @Override
+            public <R, D> R accept(TreeVisitor<R, D> visitor, D data) {
+                throw new UnsupportedOperationException();
+            }
+        };
     }
 }

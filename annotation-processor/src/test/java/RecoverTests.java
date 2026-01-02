@@ -54,7 +54,7 @@ public class RecoverTests {
                 .compile(JavaFileObjects.forResource("recover/CanSee_LetLocalRefAsTag.java"));
 
         Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 1, compilation.errors().size());
-        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (17,16) incorrect or inconsistent return type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (20,45) argument is not a subtype of parameter", compilation.errors().getFirst().getMessage(Locale.getDefault()));
     }
 
     @Test
