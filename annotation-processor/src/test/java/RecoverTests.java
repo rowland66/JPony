@@ -10,6 +10,54 @@ import java.util.Locale;
 public class RecoverTests {
 
     @Test
+    public void testCanRecover_NewRefToIso() {
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new JPonyProcessor())
+                .compile(JavaFileObjects.forResource("recover/CanRecover_NewRefToIso.java"));
+
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 0, compilation.errors().size());
+    }
+
+    @Test
+    public void testCanRecover_NewRefToVal() {
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new JPonyProcessor())
+                .compile(JavaFileObjects.forResource("recover/CanRecover_NewRefToVal.java"));
+
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 0, compilation.errors().size());
+    }
+
+    @Test
+    public void testCantRecover_NewValToIso() {
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new JPonyProcessor())
+                .compile(JavaFileObjects.forResource("recover/CantRecover_NewValToIso.java"));
+
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 1, compilation.errors().size());
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (17,16) incorrect or inconsistent return type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
+    }
+
+    @Test
+    public void testCantRecover_NewTagToVal() {
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new JPonyProcessor())
+                .compile(JavaFileObjects.forResource("recover/CantRecover_NewTagToVal.java"));
+
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 1, compilation.errors().size());
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (17,16) incorrect or inconsistent return type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
+    }
+
+    @Test
+    public void testCanSee_LetLocalRefAsTag() {
+        Compilation compilation = Compiler.javac()
+                .withProcessors(new JPonyProcessor())
+                .compile(JavaFileObjects.forResource("recover/CanSee_LetLocalRefAsTag.java"));
+
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), 1, compilation.errors().size());
+        Assert.assertEquals(TestUtils.dumpErrors(compilation.errors()), "at (17,16) incorrect or inconsistent return type", compilation.errors().getFirst().getMessage(Locale.getDefault()));
+    }
+
+    @Test
     public void testNoWriteToVal() {
         Compilation compilation = Compiler.javac()
                 .withProcessors(new JPonyProcessor())

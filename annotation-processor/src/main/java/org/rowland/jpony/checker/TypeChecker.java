@@ -210,7 +210,7 @@ public class TypeChecker {
             TypeEnvironment.EnvironmentValue rtrnType =
                     getExpressionType(typeEnvironment, returnTree.getExpression()); //TODO: compare to method return type
             if (typeEnvironment.getReturnType() != null) {
-                if (!typeEnvironment.getReturnType().equals(rtrnType.ponyType)) {
+                if (!rtrnType.ponyType.isSubtypeOf(typeEnvironment.getReturnType())) {
                     printError("incorrect or inconsistent return type", returnTree.getExpression());
                     throw new TypeCheckException();
                 }
@@ -747,9 +747,13 @@ public class TypeChecker {
                             return Optional.of(new TypeEnvironment.EnvironmentValue(
                                     new PonyType(PonyType.Capability.Iso).asEphemeral(),
                                     recoverType.javaType));
-                        } else {
+                        } else if (recoverType.getPonyType().isImmutable()) {
                             return Optional.of(new TypeEnvironment.EnvironmentValue(
                                     new PonyType(PonyType.Capability.Val).asEphemeral(),
+                                    recoverType.javaType));
+                        } else {
+                            return Optional.of(new TypeEnvironment.EnvironmentValue(
+                                    new PonyType(PonyType.Capability.Tag).asEphemeral(),
                                     recoverType.javaType));
                         }
                     }

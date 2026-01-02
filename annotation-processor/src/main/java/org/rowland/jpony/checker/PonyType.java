@@ -200,6 +200,20 @@ sealed class PonyType permits PonyType.ConsumedVariable {
         return false;
     }
 
+    public boolean isImmutable() {
+        if (capability == Capability.Val || capability == Capability.Box) {
+            return true;
+        }
+        return false;
+    }
+
+    public boolean isOpaque() {
+        if (capability == Capability.Tag) {
+            return true;
+        }
+        return false;
+    }
+
     public static PonyType getPonyTypeForCapability(CapabilityType capability) {
         return switch (capability) {
             case Iso -> new PonyType(PonyType.Capability.Iso);
